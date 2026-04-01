@@ -1,0 +1,490 @@
+---
+sidebar_position: 3
+---
+
+import Tabs from "@theme/Tabs";
+import TabItem from "@theme/TabItem";
+import ThemedImage from "@theme/ThemedImage";
+import useBaseUrl from "@docusaurus/useBaseUrl";
+
+# Edge Node Deployment
+
+Deploy interLink on an edge node, outside the local K8S cluster.
+
+<ThemedImage
+  alt="Docusaurus themed image"
+  sources={{
+    light: useBaseUrl("/img/scenario-1_light.svg"),
+    dark: useBaseUrl("/img/scenario-1_dark.svg"),
+  }}
+/>
+
+:::info Quick Start Available
+
+**New to interLink?** Start with our [Quickstart Guide](../quickstart) for a 10-minute mTLS setup. This guide provides detailed configuration options for production deployments.
+
+:::
+
+## Architecture Overview
+
+```
++---------------------------+     Port 3000 (mTLS/OIDC)    +---------------------------+
+|   Kubernetes Cluster    | ----------------------------> |      Edge Node            |
+|                         |                                |                           |
+|  +------------------+   |                                |  +--------------------+   |
+|  | Virtual Kubelet  |   |                                |  | interLink API      |   |
+|  | (Helm deployed)  |   |                                |  | (port 3000)        |   |
+|  +--------+---------+   |                                |  +---------+----------+   |
+|           |             |                                |            |              |
+|           |             |                                |            | localhost    |
+|           |             |                                |            v              |
+|           |             |                                |  +--------------------+   |
+|           |             |                                |  | Plugin             |   |
+|           |             |                                |  | (port 4000)        |   |
+|           |             |                                |  +--------------------+   |
++---------------------------+                                +---------------------------+
+```
+
+**Network Requirements:**
+- Edge node must be reachable from Kubernetes cluster on port 3000 (or custom)
+- Plugin communicates with interLink API over localhost (port 4000)
+- Firewall should restrict access to Kubernetes cluster CIDR only
+
+---
+
+## Authentication Options
+
+InterLink supports two authentication methods:
+
+| Method | Best For | Complexity | External Dependencies |
+|--------|----------|------------|----------------------|
+| **[mTLS](#mtls-authentication)** | Private networks, HPC, testing | Low | None |
+| **[OIDC/OAuth2](#oidc-authentication)** | Multi-tenant, enterprise SSO | Medium | Identity Provider |
+
+:::tip Recommendation
+
+For most deployments, **mTLS is recommended** - it's simpler to set up and doesn't require an external identity provider. See the [Quickstart](../quickstart) for mTLS setup.
+
+:::
+
+---
+
+## Installation
+
+### Prerequisites
+
+**Edge Node:**
+- Linux (Ubuntu 20.04+, RHEL 8+, or similar)
+- Docker Engine **or** SLURM with Singularity
+- `wget`, `jq`, `curl`, `openssl` installed
+- Outbound internet access (for downloading binaries)
+
+**Kubernetes Cluster:**
+- Helm 3.x installed
+- `kubectl` configured
+- Network access to edge node on port 3000
+
+### Step 1: Download interLink
+
+```bash
+mkdir -p $HOME/.interlink/{bin,config,certs,logs}
+export VERSION=$(curl -s https://api.github.com/repos/interlink-hq/interlink/releases/latest | jq -r .name)
+wget -O $HOME/.interlink/bin/interlink \
+  https://github.com/interlink-hq/interLink/releases/download/$VERSION/interlink_Linux_x86_64
+chmod +x $HOME/.interlink/bin/interlink
+```
+
+### Step 2: Choose Authentication Method
+
+<Tabs groupId="auth-method">
+  <TabItem value="mtls" label="mTLS (Recommended)" default>
+
+See the [Quickstart Guide](../quickstart#step-1-generate-mtls-certificates) for complete mTLS setup instructions.
+
+Quick reference:
+
+```bash
+# Generate certificates (see Quickstart for full script)
+mkdir -p ~/interlink-certs && cd ~/interlink-certs
+# ... certificate generation ...
+
+# Create configuration
+cat > $HOME/.interlink/config/InterLinkConfig.yaml << 'EOF'
+InterlinkAddress: https://0.0.0.0
+InterlinkPort: "3000"
+SidecarURL: http://localhost
+SidecarPort: "4000"
+DataRootFolder: "/tmp/interlink"
+VerboseLogging: true
+
+TLS:
+  Enabled: true
+  CertFile: "/home/USER/.interlink/certs/server-cert.pem"
+  KeyFile: "/home/USER/.interlink/certs/server-key.pem"
+  CACertFile: "/home/USER/.interlink/certs/ca.pem"
+EOF
+```
+
+  </TabItem>
+  <TabItem value="oidc" label="OIDC/OAuth2">
+
+:::note
+
+OIDC requires an identity provider (IdP). See dedicated guides for:
+- [GitHub OAuth](../guides/04-oidc-IAM.md#github-authn)
+- [EGI Check-in](../guides/04-oidc-IAM.md#egi-check-in)
+- [INFN IAM](../guides/04-oidc-IAM.md#indigo-iam)
+
+:::
+
+```bash
+# Download installer
+wget -O $HOME/.interlink/interlink-installer \
+  https://github.com/interlink-hq/interLink/releases/download/$VERSION/interlink-installer_Linux_x86_64
+chmod +x $HOME/.interlink/interlink-installer
+
+# Initialize configuration
+$HOME/.interlink/interlink-installer --init --config $HOME/.interlink/installer.yaml
+
+# Edit configuration (see OIDC section below)
+# Then run installer
+$HOME/.interlink/interlink-installer --config $HOME/.interlink/installer.yaml \
+  --output-dir $HOME/.interlink/manifests/
+
+# Install and start
+chmod +x $HOME/.interlink/manifests/interlink-remote.sh
+$HOME/.interlink/manifests/interlink-remote.sh install
+$HOME/.interlink/manifests/interlink-remote.sh start
+```
+
+  </TabItem>
+</Tabs>
+
+### Step 3: Configure and Start Plugin
+
+<Tabs groupId="plugin-type">
+  <TabItem value="docker" label="Docker Plugin" default>
+
+**Requirements:** Docker Engine installed, user in `docker` group
+
+```bash
+# Create configuration
+cat > $HOME/.interlink/config/plugin-config.yaml << EOF
+Socket: "unix://$HOME/.interlink/.plugin.sock"
+InterlinkPort: "0"
+SidecarPort: "4000"
+DataRootFolder: "$HOME/.interlink/jobs/"
+BashPath: /bin/bash
+VerboseLogging: false
+EOF
+
+# Download plugin
+export PLUGIN_VERSION=$(curl -s https://api.github.com/repos/interlink-hq/interlink-docker-plugin/releases/latest | jq -r .name)
+wget -O $HOME/.interlink/bin/plugin \
+  https://github.com/interlink-hq/interlink-docker-plugin/releases/download/${PLUGIN_VERSION}/docker-plugin_Linux_x86_64
+chmod +x $HOME/.interlink/bin/plugin
+
+# Start plugin
+export INTERLINKCONFIGPATH=$HOME/.interlink/config/plugin-config.yaml
+$HOME/.interlink/bin/plugin &> $HOME/.interlink/logs/plugin.log &
+echo $! > $HOME/.interlink/plugin.pid
+
+# Verify
+sleep 2 && tail -n 10 $HOME/.interlink/logs/plugin.log
+```
+
+  </TabItem>
+  <TabItem value="slurm" label="SLURM Plugin">
+
+**Requirements:** SLURM CLI, Singularity/Apptainer, shared filesystem
+
+```bash
+# Create configuration
+cat > $HOME/.interlink/config/plugin-config.yaml << EOF
+Socket: "unix://$HOME/.interlink/.plugin.sock"
+InterlinkPort: "0"
+SidecarPort: "4000"
+DataRootFolder: "$HOME/.interlink/jobs/"
+BashPath: /bin/bash
+SbatchPath: "/usr/bin/sbatch"
+ScancelPath: "/usr/bin/scancel"
+SqueuePath: "/usr/bin/squeue"
+SingularityPrefix: ""
+EOF
+
+# Download plugin
+export PLUGIN_VERSION=$(curl -s https://api.github.com/repos/interlink-hq/interlink-slurm-plugin/releases/latest | jq -r .name)
+wget -O $HOME/.interlink/bin/plugin \
+  https://github.com/interlink-hq/interlink-slurm-plugin/releases/download/${PLUGIN_VERSION}/interlink-sidecar-slurm_Linux_x86_64
+chmod +x $HOME/.interlink/bin/plugin
+
+# Start plugin
+export SLURMCONFIGPATH=$HOME/.interlink/config/plugin-config.yaml
+$HOME/.interlink/bin/plugin &> $HOME/.interlink/logs/plugin.log &
+echo $! > $HOME/.interlink/plugin.pid
+
+# Verify
+sleep 2 && tail -n 10 $HOME/.interlink/logs/plugin.log
+```
+
+  </TabItem>
+  <TabItem value="kubernetes" label="Kubernetes Plugin">
+
+The Kubernetes plugin enables offloading to remote K8s clusters.
+
+- **Repository**: [interlink-kubernetes-plugin](https://github.com/interlink-hq/interlink-kubernetes-plugin)
+- **Status**: Beta
+- **Best For**: Multi-cluster scenarios, HTTP microservices
+
+See the plugin repository for configuration details.
+
+  </TabItem>
+</Tabs>
+
+### Step 4: Test interLink Health
+
+```bash
+curl -v --unix-socket ${HOME}/.interlink/.interlink.sock http://unix/pinglink
+```
+
+Expected response: `{"status":"ok"}` or similar success message.
+
+---
+
+## Kubernetes Deployment
+
+### Create Certificate Secret (mTLS only)
+
+```bash
+# Create namespace
+kubectl create namespace interlink
+
+# Create secret with client certificates
+# Secret name must match pattern: <nodeName>-tls-certs
+kubectl create secret generic my-node-tls-certs \
+  --from-file=ca.crt=/path/to/ca.pem \
+  --from-file=tls.crt=/path/to/client-cert.pem \
+  --from-file=tls.key=/path/to/client-key.pem \
+  -n interlink
+```
+
+### Deploy with Helm
+
+```bash
+# Create values file
+cat > interlink-values.yaml << 'EOF'
+nodeName: "my-node"
+
+virtualNode:
+  resources:
+    CPUs: 8
+    memGiB: 49
+    pods: 100
+
+interlink:
+  enabled: false
+  address: https://YOUR_EDGE_NODE_IP
+  port: 3000
+  tls:
+    enabled: true
+EOF
+
+# Replace with your edge node IP
+sed -i "s/YOUR_EDGE_NODE_IP/YOUR_ACTUAL_IP/g" interlink-values.yaml
+
+# Deploy
+export INTERLINK_CHART_VERSION=$(curl -s https://api.github.com/repos/interlink-hq/interlink-helm-chart/releases/latest | jq -r .tag_name | sed 's/interlink-//')
+helm upgrade --install \
+  --create-namespace \
+  -n interlink \
+  my-node \
+  oci://ghcr.io/interlink-hq/interlink-helm-chart/interlink \
+  --version $INTERLINK_CHART_VERSION \
+  --values interlink-values.yaml
+```
+
+:::warning Chart Version
+
+Always use the [latest chart version](https://github.com/interlink-hq/interlink-helm-chart/blob/main/interlink/Chart.yaml) compatible with your interLink version.
+
+:::
+
+---
+
+## Verification
+
+### Check Node Status
+
+```bash
+# Watch for node to become ready
+kubectl get nodes -w
+
+# Expected output:
+# NAME       STATUS   ROLES    AGE   VERSION
+# my-node    Ready    <none>   60s   v1.27.0
+```
+
+### Deploy Test Pod
+
+```bash
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-edge
+spec:
+  nodeSelector:
+    kubernetes.io/hostname: my-node
+  tolerations:
+    - key: virtual-node.interlink/no-schedule
+      operator: Exists
+  containers:
+  - name: test
+    image: busybox:latest
+    command: ["sleep", "3600"]
+EOF
+
+# Check status
+kubectl get pod test-edge -o wide
+```
+
+### Verify on Edge Node
+
+<Tabs groupId="plugin-type">
+  <TabItem value="docker" label="Docker Plugin">
+
+```bash
+docker ps --filter "name=test-edge"
+```
+
+  </TabItem>
+  <TabItem value="slurm" label="SLURM Plugin">
+
+```bash
+squeue -u $USER
+ls -la $HOME/.interlink/jobs/
+```
+
+  </TabItem>
+</Tabs>
+
+:::warning CSR Approval for Logs
+
+If `kubectl logs` fails, approve the Certificate Signing Request:
+
+```bash
+kubectl get csr
+kubectl certificate approve csr-xxxxx
+```
+
+See [Quickstart](../quickstart#test-logs-important) for details.
+
+:::
+
+---
+
+## Production Deployment
+
+### Systemd Services
+
+For production, use systemd instead of background processes:
+
+```bash
+# See the Systemd Deployment Guide for complete instructions
+```
+
+:::tip
+
+See the [Systemd Deployment Guide](../guides/08-systemd-deployment) for production-ready service configuration.
+
+:::
+
+### Security Hardening
+
+1. **Firewall Configuration:**
+   ```bash
+   sudo ufw allow from <K8s-cluster-CIDR> to any port 3000
+   sudo ufw deny 3000 comment "Block public access"
+   ```
+
+2. **Certificate Security:**
+   - Private keys: `chmod 600`
+   - Rotate certificates before expiration
+   - Store CA key securely (offline/HSM)
+
+3. **Monitoring:**
+   - Enable verbose logging initially
+   - Set up log rotation
+   - Monitor failed authentication attempts
+
+:::note
+
+See the [Security Hardening Guide](#) (coming soon) for comprehensive security recommendations.
+
+:::
+
+---
+
+## Troubleshooting
+
+### Node Not Ready
+
+```bash
+# Check Virtual Kubelet logs
+kubectl logs -n interlink -l app=virtual-kubelet
+
+# Common issues:
+# - Network connectivity (test with: curl https://EDGE_IP:3000/pinglink)
+# - Certificate mismatch (verify SANs match edge node IP)
+# - Wrong IP in Helm values
+```
+
+### Plugin Not Responding
+
+```bash
+# Check plugin logs
+tail -f $HOME/.interlink/logs/plugin.log
+
+# Restart plugin
+kill $(cat $HOME/.interlink/plugin.pid)
+$HOME/.interlink/bin/plugin &> $HOME/.interlink/logs/plugin.log &
+echo $! > $HOME/.interlink/plugin.pid
+```
+
+### Connection Refused
+
+```bash
+# Check if interLink is running
+ps aux | grep interlink
+netstat -tlnp | grep 3000
+
+# Check firewall
+sudo ufw status | grep 3000
+```
+
+---
+
+## Other Plugins
+
+### Third-Party Plugins
+
+| Plugin | Target | Repository | Status |
+|--------|--------|------------|--------|
+| HTCondor | HTCondor batch | [interlink-htcondor-plugin](https://github.com/interlink-hq/interlink-htcondor-plugin) | Beta |
+| ARC | ARC batch | [interlink-arc-plugin](https://github.com/interlink-hq/interlink-arc-plugin) | Beta |
+| UNICORE | HPC centers | [interlink-unicore-plugin](https://github.com/interlink-hq/interlink-unicore-plugin) | Beta |
+| Kubernetes | Remote K8s | [interlink-kubernetes-plugin](https://baltig.infn.it/mgattari/interlink-kubernetes-plugin) | Beta |
+
+### Develop Your Own
+
+See the [Plugin Development Guide](../guides/02-develop-a-plugin.md) to create a custom plugin for your environment.
+
+---
+
+## Next Steps
+
+- **[Quickstart Guide](../quickstart)** - Complete 10-minute setup
+- **[Plugin Development](../guides/02-develop-a-plugin)** - Create custom plugins
+- **[Systemd Deployment](../guides/08-systemd-deployment)** - Production services
+- **[Monitoring](../guides/05-monitoring)** - Observability setup
+- **[mTLS Reference](../guides/07-mtls-deployment)** - Advanced mTLS configuration

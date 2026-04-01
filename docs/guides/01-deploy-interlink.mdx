@@ -1,0 +1,242 @@
+---
+sidebar_position: 1
+---
+
+# Deploy Your Plugin
+
+This guide provides an overview of available plugins and how to integrate them with interLink.
+
+:::info Quick Start Available
+
+**New to interLink?** Start with our [Quickstart Guide](../quickstart) for a complete 10-minute setup with the Docker plugin.
+
+For detailed edge node deployment instructions, see the [Edge Node Cookbook](../cookbook/1-edge.mdx).
+
+:::
+
+## Available Plugins
+
+### Official Plugins
+
+| Plugin | Target Environment | Language | Status | Repository |
+|--------|-------------------|----------|--------|------------|
+| **Docker** | Docker Engine (VMs, bare metal) | Go | ✅ Stable | [interlink-docker-plugin](https://github.com/interlink-hq/interlink-docker-plugin) |
+| **SLURM** | SLURM batch systems with Singularity | Go | ✅ Stable | [interlink-slurm-plugin](https://github.com/interlink-hq/interlink-slurm-plugin) |
+| **Kubernetes** | Remote Kubernetes clusters | Python | 🧪 Beta | [interlink-kubernetes-plugin](https://baltig.infn.it/mgattari/interlink-kubernetes-plugin) |
+
+### Community Plugins
+
+| Plugin | Target Environment | Status | Repository |
+|--------|-------------------|--------|------------|
+| **HTCondor** | HTCondor batch systems | 🧪 Beta | [interlink-htcondor-plugin](https://github.com/interlink-hq/interlink-htcondor-plugin) |
+| **ARC** | ARC batch systems | 🧪 Beta | [interlink-arc-plugin](https://github.com/interlink-hq/interlink-arc-plugin) |
+| **UNICORE** | UNICORE HPC infrastructure | 🧪 Beta | [interlink-unicore-plugin](https://github.com/interlink-hq/interlink-unicore-plugin) |
+
+### Plugin Selection Guide
+
+**Choose Docker if:**
+- You have a VM or bare metal with Docker Engine
+- Testing or development environment
+- Simple container workloads
+
+**Choose SLURM if:**
+- You manage an HPC cluster with SLURM
+- Need Singularity/Apptainer container support
+- Batch job workloads with resource scheduling
+
+**Choose Kubernetes if:**
+- Offloading to remote K8s clusters
+- HTTP microservices workloads
+- Multi-cluster scenarios
+
+**Choose HTCondor/ARC/UNICORE if:**
+- You have existing infrastructure with these batch systems
+- Specific HPC center requirements
+
+---
+
+## Quick Integration
+
+### Option 1: Use Existing Plugin (Recommended)
+
+For most users, using an existing plugin is the fastest path:
+
+1. **Follow the Quickstart** - [Quickstart Guide](../quickstart) (10 minutes)
+2. **Or follow the Edge Node Cookbook** - [Edge Node Deployment](../cookbook/1-edge.mdx) (30 minutes)
+
+Both guides include complete plugin setup for Docker or SLURM.
+
+### Option 2: Develop a Custom Plugin
+
+If you need to integrate with a custom backend or have specific requirements:
+
+📖 **[Plugin Development Guide](./02-develop-a-plugin.md)** - Complete tutorial with Python SDK
+
+**Key Resources:**
+- [Plugin SDK Repository](https://github.com/interlink-hq/interlink-plugin-sdk)
+- [Plugin API Specification](./03-api-reference.mdx#plugin-api-spec)
+- [Example Plugin (Docker)](https://github.com/interlink-hq/interlink-docker-plugin)
+
+**Development Time:** 1-3 days for a basic plugin
+
+---
+
+## Plugin Architecture
+
+```
++------------------+     HTTP/REST      +------------------+
+|  interLink API   | -----------------> |     Plugin       |
+|  Server          |   (port 4000)      |   (Sidecar)      |
++------------------+                    +--------+---------+
+                                                 |
+                    +----------------------------+
+                    |
+         +----------v-----------+
+         |  Target Backend      |
+         |  - Docker            |
+         |  - SLURM             |
+         |  - Kubernetes        |
+         |  - Custom            |
+         +----------------------+
+```
+
+**Plugin Responsibilities:**
+- `/create` - Create containers/jobs from pod specs
+- `/delete` - Clean up containers/jobs
+- `/status` - Report pod/container status
+- `/getLogs` - Retrieve container logs
+
+---
+
+## Configuration Reference
+
+### Docker Plugin
+
+```yaml
+# plugin-config.yaml
+Socket: "unix:///home/user/.interlink/.plugin.sock"
+InterlinkPort: "0"
+SidecarPort: "4000"
+DataRootFolder: "/home/user/.interlink/jobs/"
+BashPath: /bin/bash
+VerboseLogging: false
+```
+
+**Requirements:**
+- Docker Engine installed
+- User in `docker` group
+- Docker socket accessible
+
+### SLURM Plugin
+
+```yaml
+# plugin-config.yaml
+Socket: "unix:///home/user/.interlink/.plugin.sock"
+InterlinkPort: "0"
+SidecarPort: "4000"
+DataRootFolder: "/home/user/.interlink/jobs/"
+SbatchPath: "/usr/bin/sbatch"
+ScancelPath: "/usr/bin/scancel"
+SqueuePath: "/usr/bin/squeue"
+SingularityPrefix: ""
+```
+
+**Requirements:**
+- SLURM CLI installed and configured
+- Singularity/Apptainer available
+- Shared filesystem with compute nodes
+
+---
+
+## Testing Your Setup
+
+After plugin deployment, verify with:
+
+```bash
+# Test interLink health
+curl -v --unix-socket ${HOME}/.interlink/.interlink.sock http://unix/pinglink
+
+# Check plugin logs
+tail -f $HOME/.interlink/logs/plugin.log
+
+# Deploy test pod from Kubernetes
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Pod
+metadata:
+  name: test-plugin
+spec:
+  nodeSelector:
+    kubernetes.io/hostname: my-node
+  tolerations:
+    - key: virtual-node.interlink/no-schedule
+      operator: Exists
+  containers:
+  - name: test
+    image: busybox:latest
+    command: ["sleep", "60"]
+EOF
+
+# Verify on edge node
+# Docker: docker ps | grep test-plugin
+# SLURM:  squeue -u $USER
+```
+
+---
+
+## Troubleshooting
+
+### Plugin Won't Start
+
+```bash
+# Check configuration syntax
+cat $HOME/.interlink/config/plugin-config.yaml
+
+# Check logs
+tail -n 50 $HOME/.interlink/logs/plugin.log
+
+# Verify dependencies
+# Docker: docker ps
+# SLURM:  sinfo
+```
+
+### Pod Stuck in ContainerCreating
+
+```bash
+# Check pod events
+kubectl describe pod test-plugin
+
+# Check plugin logs
+tail -f $HOME/.interlink/logs/plugin.log
+
+# Test plugin connectivity
+curl http://localhost:4000/ping 2>/dev/null || echo "Plugin not responding"
+```
+
+### Common Issues
+
+| Issue | Cause | Solution |
+|-------|-------|----------|
+| `connection refused` | Plugin not running | Check logs, restart plugin |
+| `permission denied` | Socket permissions | Check user/group |
+| `image not found` | Docker pull failure | Verify image name, registry access |
+| `sbatch failed` | SLURM misconfiguration | Check SLURM config, shared FS |
+
+---
+
+## Next Steps
+
+- **[Quickstart Guide](../quickstart)** - Complete setup with Docker plugin
+- **[Edge Node Deployment](../cookbook/1-edge.mdx)** - Detailed deployment guide
+- **[Plugin Development](./02-develop-a-plugin.md)** - Create custom plugins
+- **[API Reference](./03-api-reference.mdx)** - Plugin API specification
+- **[Monitoring](./05-monitoring.md)** - Add observability to your plugin
+
+---
+
+## Getting Help
+
+- 📖 [Full Documentation](../intro.mdx)
+- 💬 [Slack Community](https://join.slack.com/t/intertwin/shared_invite/zt-2cs67h9wz-2DFQ6EiSQGS1vlbbbJHctA)
+- 🐛 [GitHub Issues](https://github.com/interlink-hq/interLink/issues)
+- 📋 [Plugin SDK Docs](https://github.com/interlink-hq/interlink-plugin-sdk)
