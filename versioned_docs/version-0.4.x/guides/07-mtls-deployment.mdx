@@ -1,0 +1,413 @@
+---
+sidebar_position: 7
+---
+
+# mTLS Deployment Guide (Advanced)
+
+:::info
+
+**Looking for a quick setup?** Start with our [Quickstart Guide](../quickstart) for a 10-minute mTLS deployment with step-by-step instructions.
+
+This guide provides additional details for advanced configurations, production deployments, and troubleshooting.
+
+:::
+
+## Overview
+
+mTLS (mutual TLS) is a security protocol that provides authentication of both the client and server using digital certificates. In the context of InterLink, mTLS secures communication between the Virtual Kubelet running in your Kubernetes cluster and the InterLink API server running on the edge node.
+
+### When to Use mTLS vs OIDC
+
+| Feature | mTLS | OIDC/OAuth2 |
+|---------|------|-------------|
+| **Setup Complexity** | Low - No external IdP needed | Medium - Requires IdP configuration |
+| **Best For** | Private networks, HPC centers, testing | Multi-tenant, enterprise SSO |
+| **Certificate Management** | Manual rotation required | Token-based, automatic |
+| **User Authentication** | Service-to-service | User identity propagation |
+| **Production Ready** | ✅ Yes | ✅ Yes |
+
+---
+
+## Certificate Generation (Detailed)
+
+### Certificate Requirements
+
+For production deployments, ensure your certificates meet these requirements:
+
+| Certificate | Key Size | Validity | Extensions |
+|-------------|----------|----------|------------|
+| **CA** | 4096 bits | 1-5 years | `CA:TRUE` |
+| **Server** | 4096 bits | 1 year | `serverAuth`, SANs required |
+| **Client** | 4096 bits | 1 year | `clientAuth` |
+
+### Subject Alternative Names (SANs)
+
+The server certificate **must** include SANs matching:
+- Edge node hostname
+- Edge node IP address
+- `localhost` and `127.0.0.1` (for local testing)
+
+Example `server-ext.cnf`:
+
+```ini
+authorityKeyIdentifier=keyid,issuer
+basicConstraints=CA:FALSE
+keyUsage = digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName = @alt_names
+
+[alt_names]
+DNS.1 = interlink-server
+DNS.2 = edge-node.example.com
+DNS.3 = localhost
+IP.1 = 192.168.1.100
+IP.2 = 127.0.0.1
+```
+
+### Certificate Rotation
+
+For production, implement certificate rotation:
+
+```bash
+#!/bin/bash
+# Example rotation script
+CERTS_DIR=$HOME/.interlink/certs
+BACKUP_DIR=$HOME/.interlink/certs-backup-$(date +%Y%m%d)
+
+# Backup old certificates
+mkdir -p $BACKUP_DIR
+cp $CERTS_DIR/*.pem $BACKUP_DIR/
+
+# Generate new certificates (see Quickstart for full commands)
+# ...
+
+# Restart services
+systemctl restart interlink
+```
+
+:::tip
+
+Set up monitoring for certificate expiration. Alert at 30 days before expiry.
+
+:::
+
+---
+
+## Production Configuration
+
+### File Permissions
+
+Secure your certificate files:
+
+```bash
+# Private keys - owner read/write only
+chmod 600 $HOME/.interlink/certs/*-key.pem
+
+# Certificates - owner read/write, group read
+chmod 644 $HOME/.interlink/certs/*.pem
+
+# Configuration files
+chmod 600 $HOME/.interlink/config/*.yaml
+```
+
+### Systemd Service (Recommended)
+
+For production, use systemd instead of background processes:
+
+```ini
+# /etc/systemd/system/interlink.service
+[Unit]
+Description=InterLink API Server
+After=network.target
+
+[Service]
+Type=simple
+User=interlink
+Group=interlink
+Environment=INTERLINKCONFIGPATH=/etc/interlink/InterLinkConfig.yaml
+ExecStart=/usr/local/bin/interlink
+Restart=always
+RestartSec=5
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/log/interlink /var/lib/interlink
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```ini
+# /etc/systemd/system/interlink-plugin.service
+[Unit]
+Description=InterLink Plugin
+After=network.target interlink.service
+
+[Service]
+Type=simple
+User=interlink
+Group=interlink
+Environment=INTERLINKCONFIGPATH=/etc/interlink/plugin-config.yaml
+ExecStart=/usr/local/bin/plugin
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and start:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable interlink interlink-plugin
+sudo systemctl start interlink interlink-plugin
+sudo systemctl status interlink interlink-plugin
+```
+
+:::note
+
+See the [Systemd Deployment Guide](./08-systemd-deployment) for complete instructions.
+
+:::
+
+---
+
+## Network Security
+
+### Firewall Configuration
+
+```bash
+# Allow Kubernetes cluster CIDR
+sudo ufw allow from 10.0.0.0/8 to any port 3000 comment "InterLink mTLS from K8s"
+sudo ufw allow from 172.16.0.0/12 to any port 3000 comment "InterLink mTLS from K8s"
+sudo ufw allow from 192.168.0.0/16 to any port 3000 comment "InterLink mTLS from K8s"
+
+# Deny all other access
+sudo ufw deny 3000 comment "Block public access to InterLink API"
+
+# Reload firewall
+sudo ufw reload
+```
+
+### Network Policies
+
+If using Kubernetes network policies, ensure the Virtual Kubelet pod can reach the edge node:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-interlink-egress
+  namespace: interlink
+spec:
+  podSelector:
+    matchLabels:
+      app: virtual-kubelet
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - ipBlock:
+        cidr: YOUR_EDGE_NODE_IP/32
+    ports:
+    - protocol: TCP
+      port: 3000
+```
+
+---
+
+## Advanced Troubleshooting
+
+### Certificate Diagnostics
+
+```bash
+# View certificate details
+openssl x509 -in server-cert.pem -text -noout | grep -A 1 "Subject Alternative Name"
+
+# Verify certificate chain
+openssl verify -CAfile ca.pem server-cert.pem
+openssl verify -CAfile ca.pem client-cert.pem
+
+# Check certificate dates
+openssl x509 -in server-cert.pem -noout -dates
+openssl x509 -in client-cert.pem -noout -dates
+```
+
+### Connection Testing
+
+```bash
+# Test from Kubernetes node (or any client)
+openssl s_client -connect YOUR_EDGE_NODE_IP:3000 \
+  -CAfile ca.pem \
+  -cert client-cert.pem \
+  -key client-key.pem \
+  -verify_return_error
+
+# Expected output should include:
+# Verify return code: 0 (ok)
+# SSL handshake has read X bytes and written Y bytes
+```
+
+### Debug Logging
+
+Enable verbose logging in `InterLinkConfig.yaml`:
+
+```yaml
+VerboseLogging: true
+ErrorsOnlyLogging: false
+```
+
+Monitor logs:
+
+```bash
+# Real-time log monitoring
+tail -f $HOME/.interlink/logs/interlink.log | grep -E "(TLS|certificate|error|handshake)"
+
+# Search for specific errors
+grep -i "certificate verification failed" $HOME/.interlink/logs/interlink.log
+```
+
+### Common Issues
+
+| Error | Cause | Solution |
+|-------|-------|----------|
+| `certificate verify failed: unable to get local issuer` | Missing CA in chain | Ensure CA cert is in `CACertFile` |
+| `certificate has expired` | Expired certificate | Regenerate certificates |
+| `certificate not valid for requested hostname` | SAN mismatch | Add correct SANs to server cert |
+| `connection refused` | Service not running | Check `systemctl status interlink` |
+| `handshake failure` | Protocol/cipher mismatch | Update OpenSSL, check TLS versions |
+
+---
+
+## Helm Chart Configuration
+
+### Complete Values Example
+
+```yaml
+# mtls-values.yaml
+nodeName: "my-node"
+
+virtualNode:
+  resources:
+    CPUs: 16
+    memGiB: 64
+    pods: 200
+  HTTP:
+    insecure: false
+  kubeletHTTP:
+    insecure: false
+  tracing:
+    enabled: true
+    endpoint: "tempo.monitoring:4317"
+
+interlink:
+  enabled: false
+  address: https://edge-node.example.com
+  port: 3000
+  tls:
+    enabled: true
+    certFile: "/etc/vk/certs/tls.crt"
+    keyFile: "/etc/vk/certs/tls.key"
+    caCertFile: "/etc/vk/certs/ca.crt"
+
+tolerations:
+  - key: virtual-node.interlink/no-schedule
+    operator: Exists
+    effect: NoSchedule
+```
+
+---
+
+## Security Best Practices
+
+1. **Certificate Storage**
+   - Store CA private key offline or in HSM
+   - Use file system permissions (600 for keys)
+   - Consider certificate management tools (Vault, cert-manager)
+
+2. **Network Isolation**
+   - Restrict access to interLink port (3000) from K8s cluster only
+   - Use private networking when possible
+   - Implement network policies
+
+3. **Monitoring**
+   - Alert on certificate expiration (30 days)
+   - Monitor failed authentication attempts
+   - Track connection metrics
+
+4. **Access Control**
+   - Limit plugin capabilities
+   - Use separate certificates per Virtual Kubelet node
+   - Implement audit logging
+
+---
+
+## Related Documentation
+
+- **[Quickstart Guide](../quickstart)** - Fast 10-minute setup
+- **[Systemd Deployment](./08-systemd-deployment)** - Production service management
+- **[Security Hardening](#)** - Comprehensive security guide (coming soon)
+- **[Monitoring](./05-monitoring)** - Observability setup
+
+---
+
+## Legacy Certificate Generation Script
+
+:::details Full certificate generation script (for reference)
+
+```bash
+# Create working directory
+mkdir -p ~/interlink-certs && cd ~/interlink-certs
+
+# Create server extension config with SANs
+cat > server-ext.cnf <<EOF
+authorityKeyIdentifier=keyid,issuer
+basicConstraints=CA:FALSE
+keyUsage = digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName = @alt_names
+
+[alt_names]
+DNS.1 = interlink-server
+DNS.2 = localhost
+IP.1 = YOUR_EDGE_NODE_IP
+IP.2 = 127.0.0.1
+EOF
+
+# Generate CA private key
+openssl genrsa -out ca-key.pem 4096
+
+# Generate CA certificate
+openssl req -new -x509 -days 365 -key ca-key.pem -sha256 -out ca.pem \
+  -subj "/C=US/ST=CA/L=San Francisco/O=InterLink/CN=InterLink CA"
+
+# Generate server private key
+openssl genrsa -out server-key.pem 4096
+
+# Generate server certificate signing request
+openssl req -subj "/C=US/ST=CA/L=San Francisco/O=InterLink/CN=interlink-server" \
+  -sha256 -new -key server-key.pem -out server.csr
+
+# Generate server certificate signed by CA
+openssl x509 -req -days 365 -sha256 -in server.csr -CA ca.pem -CAkey ca-key.pem \
+  -out server-cert.pem -extfile server-ext.cnf
+
+# Generate client private key
+openssl genrsa -out client-key.pem 4096
+
+# Generate client certificate signing request
+openssl req -subj "/C=US/ST=CA/L=San Francisco/O=InterLink/CN=interlink-client" \
+  -sha256 -new -key client-key.pem -out client.csr
+
+# Generate client certificate signed by CA
+openssl x509 -req -days 365 -sha256 -in client.csr -CA ca.pem -CAkey ca-key.pem \
+  -out client-cert.pem -extensions v3_req
+
+# Clean up
+rm server.csr client.csr server-ext.cnf
+```
+
+:::

@@ -1,0 +1,191 @@
+---
+sidebar_position: 6
+---
+
+# Contributing
+
+Thank you for your interest in contributing to the interLink documentation!
+This guide covers everything you need to get started.
+
+## Code of Conduct
+
+This project follows the [CNCF Code of Conduct](https://github.com/cncf/foundation/blob/main/code-of-conduct.md).
+By participating you are expected to uphold this code.
+
+---
+
+## Getting Started
+
+### Prerequisites
+
+- [Node.js](https://nodejs.org/) ≥ 18
+- [Yarn](https://yarnpkg.com/) (used as the package manager for this project)
+- A GitHub account
+
+### Fork and clone
+
+```bash
+# Fork the repo via the GitHub UI, then clone your fork
+git clone https://github.com/<your-username>/docs.git
+cd docs
+
+# Add the upstream remote
+git remote add upstream https://github.com/interlink-hq/docs.git
+```
+
+### Install dependencies
+
+```bash
+yarn install
+```
+
+### Start the local development server
+
+```bash
+yarn start --config docusaurus.config.local.ts
+```
+
+This opens a browser window at `http://localhost:3000`. Most changes are
+reflected live without restarting the server.
+
+Alternatively, you can use the [Dagger](https://dagger.io/) module for a
+self-contained preview environment:
+
+```bash
+dagger -m github.com/levlaz/daggerverse/docusaurus@f073c72e0a7345bba2173a15269307df297c3c13 \
+  call --src ./ serve up
+```
+
+---
+
+## Development Workflow
+
+1. **Sync your fork** before starting new work:
+
+   ```bash
+   git fetch upstream
+   git checkout main
+   git merge upstream/main
+   ```
+
+2. **Create a feature branch** with a descriptive name:
+
+   ```bash
+   git checkout -b docs/my-improvement
+   ```
+
+3. **Make your changes** (see [Writing Documentation](#writing-documentation) below).
+
+4. **Build and verify** the site builds without errors:
+
+   ```bash
+   yarn build
+   ```
+
+5. **Commit** using a clear, imperative message (e.g. `docs: add guide for mTLS deployment`).
+
+6. **Push** to your fork and open a Pull Request against `main`.
+
+---
+
+## Writing Documentation
+
+### File locations
+
+| Content type | Directory |
+|---|---|
+| Current (latest) docs | `docs/` |
+| Versioned docs (e.g. 0.5.x) | `versioned_docs/version-<x.y.z>/` |
+| React components | `src/components/` |
+| Static assets (images, etc.) | `static/` |
+
+### Page formats
+
+- **`.mdx`** — preferred for pages that need React components or admonitions.
+- **`.md`** — plain Markdown; fine for simple prose pages.
+
+### Front matter
+
+Every documentation page should include front matter with at least a `sidebar_position`:
+
+```yaml
+---
+sidebar_position: 3
+---
+```
+
+### Admonitions
+
+Use [Docusaurus admonitions](https://docusaurus.io/docs/markdown-features/admonitions)
+for notes, tips, warnings and cautions:
+
+```md
+:::note
+This is a note.
+:::
+
+:::tip
+This is a tip.
+:::
+
+:::warning
+This is a warning.
+:::
+```
+
+### Images
+
+Place images in `static/img/` and reference them with an absolute path:
+
+```md
+![Alt text](/img/my-diagram.png)
+```
+
+### Versioned docs
+
+When a change applies to a specific version of interLink, update the
+appropriate directory under `versioned_docs/`. Changes that apply to the
+current (unreleased) version belong in `docs/`.
+
+---
+
+## Submitting Changes
+
+1. Open a Pull Request against the `main` branch.
+2. Fill in the PR description explaining *what* changed and *why*.
+3. A maintainer will review your PR. Please address any review comments promptly.
+4. Once approved, a maintainer will merge your PR and it will be automatically
+   deployed to GitHub Pages via the CI/CD workflow.
+
+### Commit message convention
+
+We follow the [Conventional Commits](https://www.conventionalcommits.org/) specification:
+
+| Prefix | Use for |
+|---|---|
+| `docs:` | Documentation content changes |
+| `feat:` | New pages or major new sections |
+| `fix:` | Typo/broken-link corrections |
+| `chore:` | Dependency updates, config changes |
+| `ci:` | GitHub Actions workflow changes |
+
+---
+
+## Style Guide
+
+- Write in **American English**.
+- Use **second person** ("you") to address the reader.
+- Keep sentences short and paragraphs focused.
+- Prefer **active voice** over passive.
+- Use **code blocks** for all commands, file paths, and code snippets.
+- Spell out acronyms on first use.
+- Link to official upstream docs rather than duplicating their content.
+
+---
+
+## Questions?
+
+If you have any questions, feel free to:
+
+- Open a [GitHub Discussion](https://github.com/interlink-hq/docs/discussions)
+- Join the community on [Slack](https://join.slack.com/t/intertwin/shared_invite/zt-2cs67h9wz-2DFQ6EiSQGS1vlbbbJHctA)

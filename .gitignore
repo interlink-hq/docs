@@ -1,0 +1,6 @@
+# docusarus npm yarn files
+dist/
+build/
+.docusaurus/
+node_modules/
+
